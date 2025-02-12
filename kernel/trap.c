@@ -10,6 +10,9 @@ struct spinlock tickslock;
 uint ticks;
 
 extern char trampoline[], uservec[], userret[];
+pte_t* walk_external(pagetable_t pagetable, uint64 va, int alloc);
+
+
 
 // in kernelvec.S, calls kerneltrap().
 void kernelvec();
@@ -67,6 +70,34 @@ usertrap(void)
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
+  }else if(r_scause() == 15) {
+  
+    uint64 va = r_stval();
+        struct proc *p = myproc();
+        pte_t *pte = walk_external(p->pagetable, va, 0);
+
+        if (pte && (*pte & PTE_V) && (*pte & PTE_U) && !(*pte & PTE_W) && (*pte & PTE_RSW)) {
+            // Allocate a new page
+            char *mem = kalloc();
+            if (mem == 0) {
+                p->killed = 1;
+                return;
+            }
+
+            uint64 pa = PTE2PA(*pte);
+            memmove(mem, (char *)pa, PGSIZE);
+
+            // Update the page table entry
+            *pte = PA2PTE(mem) | PTE_FLAGS(*pte) | PTE_W;
+            *pte &= ~PTE_RSW;
+
+            // Flush the TLB for the updated virtual address
+            sfence_vma();
+        } else {
+            p->killed = 1;
+        }
+
+
   } else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
